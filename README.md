@@ -38,11 +38,11 @@ The core design principle: **evidence guardrails, not prompt restrictions**.
 - Every finding traces back to a specific execution in a specific container
 - Original evidence is never at risk, by design
 
-This is why we use Docker per case. It's not for convenience—it's the architectural enforcement that makes evidence spoliation **impossible**, not just discouraged.
+This is why we use Docker per case since it's the architectural enforcement that makes evidence spoliation **impossible.**
 
 ### The Traceability Contract
 
-Every finding in the investigation report is auditable. No exceptions.
+Every finding in the investigation report is auditable.
 
 A valid finding must include:
 
@@ -72,7 +72,7 @@ This traceability is not optional. The controller validates it before returning 
 
 ```text
 ┌─────────────────────────────────────────────────┐
-│ Judge / MCP Client / Browser / Claude Agent     │
+│  MCP Client / Browser / Claude Agent  
 └────────────┬────────────────────────────────────┘
              │
              │ (MCP tools / HTTP API)
@@ -189,21 +189,19 @@ The deterministic controller validates its own output at every step:
    - Draft report missing links? Discard and rebuild from durable stores.
 4. **Iteration logging:** Each retry/rebuild is logged with timestamps in `self_corrections`.
 
-This is not prompt-based ("please self-correct"). It's structural validation built into the controller logic.
+This is not prompt-based ("correct any mistakes"). It's structural validation built into the controller logic.
 
 ---
 
 ## Design Philosophy: Why Deterministic + MCP + Docker
 
-### Why Not Naive Agentic?
 
 **Why this architecture exists:**
 
-**Naive approach:** "Point Claude at SIFT tools and let it orchestrate."
+**Initial approach:** "Point Claude at SIFT tools and let it orchestrate."
 - Tools are shell commands (destructive)
 - Claude might interpret safety instructions differently each time
 - Evidence integrity relies on prompt compliance
-- Hard to audit what actually executed
 - Difficult to reproduce failures
 
 **This approach:** Type-safe MCP server + deterministic controller + Docker isolation.
@@ -234,7 +232,7 @@ The primary reproducible demo is local Docker Compose:
 - SIFT worker image: `dfir-sift-worker:latest`
 - Per-case worker containers: `sift-worker-<case-id>`
 
-### Recommended Judge Flow
+### Recommended Flow
 
 1. Clone the repository and enter this project directory.
 2. Start the full stack with Docker Compose.
@@ -435,7 +433,7 @@ docker compose build sift-worker-image
 - `query_timeline` — Query the built timeline
 - `scan_timeline` — Scan timeline for suspicious patterns
 
-### MCP Judge Smoke Test
+### MCP Smoke Test
 
 After installing Python dependencies, inspect the MCP server:
 
@@ -504,7 +502,7 @@ When you run `agent_run_case("CASE-DEMO-PERSISTENCE-001")`:
 
 **Every finding → evidence record → trace record → tool output.**
 
-Judges can trace any claim back to the specific tool execution that produced it, the container where it ran, and the evidence file analyzed.
+Any claim back to the specific tool execution that produced it, the container where it ran, and the evidence file analyzed.
 
 ---
 
@@ -531,7 +529,7 @@ finding
   -> artifact path / inode / output / hash where available
 ```
 
-`agent_run_case(case_id)` validates the generated report before returning it. Findings must include linked evidence and trace records so judges can move from a narrative statement back to the deterministic tool output that supports it.
+`agent_run_case(case_id)` validates the generated report before returning it. Findings must include linked evidence and trace records so it can move from a narrative statement back to the deterministic tool output that supports it.
 
 The agent/controller also writes a trace record for its own orchestration, making the run itself auditable.
 
@@ -539,7 +537,7 @@ The agent/controller also writes a trace record for its own orchestration, makin
 
 ## SIFT Workstation / Docker Integration
 
-The project uses Docker to reproduce a SIFT-like execution boundary without requiring every judge to manually configure a workstation.
+The project uses Docker to reproduce a SIFT-like execution boundary without requiring manual configuration of a workstation.
 
 **Important containers and images:**
 
@@ -817,8 +815,8 @@ Bash:
 ```bash
 ./scripts/clean-generated.sh
 ```
-
-Large forensic images should not be committed. Keep them local under `evidence/` or upload them through the UI.
+ 
+ Keep large forensic files under `evidence/` or upload them through the UI.
 
 ---
 
