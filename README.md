@@ -25,7 +25,7 @@ The core design principle: **evidence guardrails, not prompt restrictions**.
 
 ### Why This Matters
 
-**Naive approach:**
+**Initial approach:**
 - "Please don't modify the original evidence" (prompt-based restriction)
 - Agent might ignore it anyway
 - Evidence integrity relies on model compliance
