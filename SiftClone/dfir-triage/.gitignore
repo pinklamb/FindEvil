@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+.env
+venv/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo
+# Generated case stores and extracted artifacts.
+storage/case_store.json
+evidence/CASE-*/
+evidence/*/evidence_store.jsonl
+evidence/*/findings_store.jsonl
+evidence/*/trace_store.jsonl
+evidence/*/extractions/
+evidence/*/timelines/
+
+# Large forensic evidence should be supplied locally, not committed.
+*.e01
+*.E01
+*.plaso

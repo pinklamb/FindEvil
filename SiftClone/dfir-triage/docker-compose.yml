@@ -1,0 +1,45 @@
+services:
+
+  sift-worker-image:
+    build: ./sift_worker
+    image: dfir-sift-worker:latest
+    profiles:
+      - build-only
+
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  mcp:
+    build: ./dfir_backend
+    container_name: dfir-mcp
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2:latest
+      - OLLAMA_TIMEOUT=180
+      - OLLAMA_NUM_PREDICT=260
+      - OLLAMA_CHAT_NUM_PREDICT=220
+      - SIFT_WORKER_IMAGE=dfir-sift-worker:latest
+      - CASES_HOST_PATH=${PWD}/evidence
+      - CASES_CONTAINER_PATH=/cases
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./evidence:/app/evidence
+      - ./storage:/app/storage
+    depends_on:
+      - ollama
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  ollama_data:

@@ -1,0 +1,19 @@
+{
+  "CASE-001": {
+    "case_id": "CASE-001",
+    "created_at": "2026-06-15T20:41:13.343080+00:00",
+    "updated_at": "2026-06-15T20:41:13.343095+00:00",
+    "status": "created",
+    "evidence_path": "/cases/case-001/rocba-cdrive.e01",
+    "case_dir": "/cases/CASE-001",
+    "extractions_dir": "/cases/CASE-001/extractions",
+    "worker_container": "sift-worker-case-001",
+    "container_image": "digitalsleuth/sift-docker:jammy",
+    "image_path": null,
+    "filesystem": null,
+    "offset": null,
+    "finding_ids": [],
+    "evidence_ids": [],
+    "trace_ids": []
+  }
+}
