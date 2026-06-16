@@ -1,263 +1,197 @@
 # Traceable DFIR Investigator
 
-**Evidence-Integrity-First Forensic Analysis Through Architectural Guardrails**
+**Detectable hallucinations for agentic forensic analysis.**
 
-Traceable DFIR Investigator is a reproducible, Docker-first forensic investigation platform built for the SANS FindEvil / Protocol SIFT hackathon. It exposes the investigation engine as an actual Model Context Protocol (MCP) server, while also providing a FastAPI backend and React dashboard for judge-friendly review.
+Traceable DFIR Investigator is a reproducible, Docker-first forensic investigation platform built for the SANS FindEvil / Protocol SIFT hackathon. It exposes SIFT-backed forensic workflows through a real Model Context Protocol (MCP) server, while also providing a FastAPI backend and React dashboard for judge-friendly review.
 
-The core contract is:
+The project changes the trust boundary:
 
 ```text
-MCP client or UI or Claude Agent
+SIFT tools are the source of truth.
+LLMs and agents can orchestrate or explain.
+They cannot create evidence-backed findings unless tool output supports them.
+```
+
+## The Problem
+
+Agentic DFIR systems are powerful, but they can accidentally make the LLM the source of truth. If Claude or another agent summarizes a case and hallucinates a finding, there may be no built-in way to detect that the claim is unsupported.
+
+In forensics, that is a serious failure mode:
+
+- prompt instructions are not evidence controls;
+- an agent can misread tool output or invent a plausible claim;
+- judges and analysts need to know which exact tool output supports each finding;
+- evidence integrity should not depend on model behavior.
+
+## The Solution
+
+This project makes deterministic SIFT tool execution the source of truth.
+
+- Findings come from deterministic tool output, not LLM generation.
+- Every finding must trace back to `evidence_id -> trace_id -> tool output`.
+- Claude, a human, or any MCP-capable agent can orchestrate tool calls.
+- The controller validates findings before returning the final report.
+- If a proposed finding does not trace to tool output, it is rejected or rebuilt from durable records.
+- The dashboard shows the audit trail for every claim.
+
+The LLM is useful, but it is deliberately outside the evidence boundary. It can explain validated findings, answer questions from a compact case brief, and help an analyst navigate the case. It does not decide what is true.
+
+## Core Contract
+
+```text
+MCP client / Claude / Browser UI
   -> agent_run_case
-  -> deterministic SIFT-backed tools (isolated in Docker)
-  -> evidence records + trace records + findings
-  -> validated report (evidence integrity enforced)
-  -> compact optional LLM explanation
+  -> deterministic SIFT-backed tools in Docker
+  -> trace records from tool output
+  -> findings generated from traces
+  -> validated investigation report
+  -> optional compact LLM explanation
 ```
 
-**Key principle: The LLM is intentionally not the source of truth.** It does not create findings, decide what is suspicious, approve evidence, or receive raw artifacts by default. The deterministic controller performs the investigation, stores provenance, validates traceability, and only then prepares a compact brief for Llama/Claude commentary.
+The important property is that hallucinations become detectable. If an agent says, "this host had suspicious persistence," the system can ask: which finding, which evidence record, which trace record, and which tool output support that claim?
 
----
+## What Is Implemented
 
-## Evidence Integrity Through Architectural Boundaries
+Implemented now:
 
-The core design principle: **evidence guardrails, not prompt restrictions**.
+- Real MCP stdio server in `SiftClone/dfir-triage/dfir_backend/server.py`.
+- FastAPI wrapper over the same deterministic backend functions.
+- React/Vite dashboard for reviewing cases, findings, evidence, traces, and reports.
+- Docker Compose stack with backend, Ollama, and a custom SIFT worker image.
+- One SIFT worker container per case.
+- Durable evidence, trace, and finding stores.
+- `agent_run_case` controller with traceability validation.
+- Built-in demo cases that do not require a large forensic image.
+- Simulated self-correction demo: the controller detects an intentionally incomplete draft report, discards it, rebuilds from stored traces, and validates the final report.
 
-### Why This Matters
+Architecture-ready / intended extension:
 
-**Initial approach:**
-- "Please don't modify the original evidence" (prompt-based restriction)
-- Agent might ignore it anyway
-- Evidence integrity relies on model compliance
-- Hard to audit or recover if something fails
-
-**This approach: Architectural enforcement**
-- Original evidence lives on host filesystem (read-only mount)
-- Worker container gets isolated, case-specific mount point
-- SIFT tools physically cannot access original files
-- Every finding traces back to a specific execution in a specific container
-- Original evidence is never at risk, by design
-
-This is why we use Docker per case since it's the architectural enforcement that makes evidence spoliation **impossible.**
-
-### The Traceability Contract
-
-Every finding in the investigation report is auditable.
-
-A valid finding must include:
-
-- `finding_id`: Unique identifier
-- `evidence_id`: Which evidence was analyzed
-- `trace_id`: Which tool execution produced this finding
-- `artifact_path`: Path within the evidence
-- `tool_name`: Name of the SIFT tool that found it
-- `tool_output`: Raw output snippet (for verification)
-
-**Example trace chain:**
-
-```
-Finding: "Suspicious process persistence detected"
-  ↓ evidence_id: EVD-001
-  ↓ trace_id: TRC-042
-  ↓ tool_name: "registry_parser"
-  ↓ artifact_path: "/cases/uploads/case.e01/Windows/System32/config/SYSTEM"
-  ↓ tool_output: "HKLM\Software\Microsoft\Windows\Run contains shell.exe"
-```
-
-This traceability is not optional. The controller validates it before returning the report. If a finding lacks evidence/trace links, the report is rejected and regenerated from durable stores.
-
----
+- A live Claude or other MCP agent can orchestrate the same tool surface.
+- If the agent proposes an unsupported claim, the system can force it back to deterministic traces: call another MCP tool, produce a new trace record, validate again, or retract the claim.
 
 ## Architecture
 
 ```text
-┌─────────────────────────────────────────────────┐
-│  MCP Client / Browser / Claude Agent  
-└────────────┬────────────────────────────────────┘
-             │
-             │ (MCP tools / HTTP API)
-             ↓
-┌─────────────────────────────────────────────────┐
-│ dfir_backend/server.py                          │
-│ (MCP Server - Interface Layer)                  │
-└────────────┬────────────────────────────────────┘
-             │
-             │ (Function calls)
-             ↓
-┌─────────────────────────────────────────────────┐
-│ Deterministic Controller (agent_run_case)        │
-│ - Case orchestration                            │
-│ - Tool sequencing logic                         │
-│ - Evidence/trace/finding validation             │
-│ - Self-correction (retry, recheck, rebuild)     │
-└────────────┬────────────────────────────────────┘
-             │
-             │ (Docker spawn)
-             ↓
-┌─────────────────────────────────────────────────┐
-│ sift-worker-<case-id> Container (ISOLATED)      │
-│ ┌──────────────────────────────────────────┐    │
-│ │ SIFT Tools                               │    │
-│ │ (yara, hayabusa, timeline, etc.)         │    │
-│ └──────────────────────────────────────────┘    │
-│ ┌──────────────────────────────────────────┐    │
-│ │ Mounted Evidence (case-specific)          │    │
-│ │ /cases/uploads/example.e01                │    │
-│ │ (read-only from original)                 │    │
-│ └──────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────┘
-             │
-             │ (tool output only)
-             ↓
-┌─────────────────────────────────────────────────┐
-│ Storage (Durable Records)                       │
-│ - Evidence records (evidence_id, path, hash)    │
-│ - Trace records (trace_id, tool, output)        │
-│ - Finding records (finding_id, linked IDs)      │
-│ - Investigation report (validated)              │
-└─────────────────────────────────────────────────┘
+                 MCP stdio                         HTTP
+        Claude / MCP Inspector / Agent       Browser Dashboard
+                    |                               |
+                    v                               v
+        dfir_backend/server.py              dfir_backend/api.py
+        Real MCP tool server                 FastAPI wrapper
+                    |                               |
+                    +---------------+---------------+
+                                    |
+                                    v
+                       Deterministic Controller
+                           agent_run_case
+                                    |
+                    +---------------+---------------+
+                    |                               |
+                    v                               v
+          Docker SIFT worker per case       Durable local stores
+          sift-worker-<case-id>             evidence / traces / findings
+                    |                               |
+                    v                               v
+             SIFT tool output          Validated investigation report
+                                    |
+                                    v
+                         Optional LLM explanation
 ```
 
-**Architectural guardrail:** Docker isolation boundary ensures tools cannot modify original evidence.
+The HTTP API and MCP server share the same backend functions. `api.py` imports from `server.py`, so UI actions and MCP tool calls exercise the same deterministic controller.
 
-### Directory Structure
+## Evidence Integrity Guardrails
+
+The project uses architectural guardrails rather than relying on prompts like "please do not modify evidence."
+
+- Original evidence stays on the host filesystem.
+- The backend creates case-specific worker containers.
+- Evidence is mounted into the worker under `/cases`.
+- SIFT tools execute inside the worker boundary.
+- Tool output is recorded as trace records.
+- Findings must link back to those trace records.
+
+That means the audit trail is structural:
 
 ```text
-frontend/
-  React + Vite dashboard for case review and demo operation
-
-dfir_backend/api.py
-  FastAPI HTTP wrapper around the same deterministic backend functions
-
-dfir_backend/server.py
-  MCP stdio server and core investigation tool definitions
-
-dfir_backend/findings/
-  Deterministic finding engines
-
-dfir_backend/storage/
-  Case, evidence, trace, and finding stores
-
-dfir_backend/tools/
-  Docker/SIFT worker wrappers
-
-sift_worker/Dockerfile
-  Custom worker image with forensic tooling support
-
-docker-compose.yml
-  Ollama, backend/API, Docker socket mount, and worker image build target
+finding
+  -> evidence_id
+  -> trace_id
+  -> tool_name
+  -> artifact_path
+  -> tool output / summary
 ```
 
-### Runtime Flow
+## Self-Correction Model
+
+The self-correction idea is not "ask the model to be careful." It is validation against deterministic records.
+
+When an agent or report proposes a finding:
+
+1. The system checks whether the finding links to evidence and trace records.
+2. The trace record points to the tool, command arguments, container, artifact path, and output summary.
+3. If the links are missing or invalid, the claim is not accepted as evidence-backed.
+4. The agent can investigate further by calling another MCP tool.
+5. New tool output becomes a new trace record.
+6. The process repeats until the claim is validated or rejected.
+
+Current demo status:
+
+- The built-in demo simulates this by intentionally creating a draft report with a missing trace link.
+- `agent_run_case` detects the invalid draft, logs the correction in `self_corrections`, discards the draft, rebuilds from durable stores, and validates the final report.
+- Real non-fixture runs also validate traceability and regenerate reports from stores if validation fails.
+
+The goal is that any connected tool or agent can be challenged with: "show me the trace." If it cannot, the claim is commentary, not evidence.
+
+## Repository Layout
 
 ```text
-MCP client             Browser UI             Claude Agent
-    |                     |                        |
-    | stdio               | HTTP                   | (stdio)
-    v                     v                        v
-dfir_backend/server.py  dfir_backend/api.py  (same tools)
-    |                     |                        |
-    +----------+----------+--------────────────────+
-               |
-               v
-        deterministic controller (agent_run_case)
-               |
-               v
-   Docker spawn: sift-worker-<case-id>
-               |
-               v
-   evidence records + trace records + findings
-               |
-               v
-     validated investigation report
-               |
-               v
-      compact LLM brief for commentary
+.
+  README.md
+  DatasetDocumentation.md
+  HackathonOverview.md
+  SiftClone/dfir-triage/
+    docker-compose.yml
+    dfir_backend/
+      server.py          MCP server and core tool definitions
+      api.py             FastAPI HTTP wrapper
+      findings/          deterministic finding engines
+      storage/           case, evidence, trace, and finding stores
+      tools/             Docker/SIFT worker wrappers
+    frontend/
+      React + Vite dashboard
+    sift_worker/
+      Dockerfile         custom SIFT worker image
+    scripts/
+      start-all.ps1
+      start-all.sh
+      clean-generated.ps1
+      clean-generated.sh
 ```
 
-The HTTP API and MCP server share the same backend functions. `api.py` imports functions from `server.py`, so UI actions and MCP tool calls exercise the same deterministic controller.
+## Recommended Recreation
 
----
+The primary judge recreation path is local Docker Compose.
 
-## Built-In Self-Correction
-
-The deterministic controller validates its own output at every step:
-
-1. **Pre-execution:** Check worker container is ready. If not, retry startup.
-2. **During execution:** Monitor tool success. Missing tools trigger a recheck.
-3. **Post-execution:** Validate every finding has evidence/trace links.
-   - Draft report missing links? Discard and rebuild from durable stores.
-4. **Iteration logging:** Each retry/rebuild is logged with timestamps in `self_corrections`.
-
-This is not prompt-based ("correct any mistakes"). It's structural validation built into the controller logic.
-
----
-
-## Design Philosophy: Why Deterministic + MCP + Docker
-
-
-**Why this architecture exists:**
-
-**Initial approach:** "Point Claude at SIFT tools and let it orchestrate."
-- Tools are shell commands (destructive)
-- Claude might interpret safety instructions differently each time
-- Evidence integrity relies on prompt compliance
-- Difficult to reproduce failures
-
-**This approach:** Type-safe MCP server + deterministic controller + Docker isolation.
-- Tools are structured functions (can't be misused)
-- Controller logic is explicit, deterministic, and auditable
-- Evidence integrity is architectural, not behavioral
-- Every finding is traceable to code execution
-- Fully reproducible: same input → same execution → same output
-
-**The MCP server is designed to accept a Claude agent or other AI orchestrator,** but the core analysis engine doesn't depend on it. Evidence integrity and traceability work whether the caller is:
-- A human with the MCP inspector
-- A Claude agent
-- The HTTP API
-- An AutoGen/CrewAI multi-agent system
-
-The deterministic controller is the source of truth. The LLM (Llama/Claude) is an optional explanation layer on top.
-
----
-
-
-## Forensic Path Extraction and Docker
-
-Suspicious file paths come from *analyzed artifact data*, not filesystem traversal.
-
-When a SIFT tool parses a Windows registry hive from a disk image:
-- Tool reads: /cases/uploads/case.e01 (container path)
-- Extracts: C:\Windows\System32\shell.exe (from image data)
-- Records: Both the container mount and the extracted path
-
-Docker doesn't "interfere" with path discovery. It isolates it and makes 
-it auditable. Same image + same mount = same extracted paths. 
-This reproducibility is a feature, not a limitation.
-
-
-## Reccomended Recreation
-
-The primary reproducible demo is local Docker Compose:
+Runtime services:
 
 - Backend API: `http://localhost:8000`
 - React/Vite dashboard: `http://localhost:5174`
 - Ollama service: `http://localhost:11434`
-- MCP stdio server: `dfir_backend/server.py`
+- MCP stdio server: `SiftClone/dfir-triage/dfir_backend/server.py`
 - SIFT worker image: `dfir-sift-worker:latest`
-- Per-case worker containers: `sift-worker-<case-id>`
+- Per-case workers: `sift-worker-<case-id>`
 
-### Recommended Flow
+Recommended flow:
 
-1. Clone the repository and enter this project directory.
-2. Start the full stack with Docker Compose.
-3. Load the built-in demo cases.
-4. Run a case.
-5. Inspect the finding IDs, evidence IDs, trace IDs, and generated report.
-6. Click on finding links to see the evidence record and tool output that supports each claim.
-7. Optionally connect an MCP client to `dfir_backend/server.py` and call the same tools directly.
-
----
+1. Clone the repository.
+2. Enter `SiftClone/dfir-triage`.
+3. Start the Docker Compose demo.
+4. Open the dashboard.
+5. Load demo cases.
+6. Run a case.
+7. Click findings to inspect evidence and trace records.
+8. Optionally connect an MCP client and call the same tools directly.
 
 ## Requirements
 
@@ -270,42 +204,40 @@ For the full local workflow:
 - Python 3.12+
 - Several GB of free disk space for images and containers
 
-Optional but useful:
+Optional:
 
 - An Ollama model already pulled, such as `llama3.2:latest`
 - SANS SIFT Workstation or another Linux Docker host
 
-The full worker orchestration requires access to a Docker daemon and, for the backend container, the Docker socket mounted at `/var/run/docker.sock`.
+The full worker orchestration requires access to a Docker daemon. In Docker Compose, the backend container mounts `/var/run/docker.sock` so it can create per-case worker containers.
 
----
+## Quick Start
 
-## Fresh Clone Quick Start
-
-From a fresh clone, enter the project directory:
+From the repository root:
 
 ```bash
 cd SiftClone/dfir-triage
 ```
 
-Start everything on Linux/macOS/Git Bash:
+Linux/macOS/Git Bash:
 
 ```bash
 ./scripts/start-all.sh
 ```
 
-Start everything on PowerShell:
+PowerShell:
 
 ```powershell
 .\scripts\start-all.ps1
 ```
 
-The startup script:
+The script:
 
-- cleans generated demo data unless told otherwise,
-- builds the custom SIFT worker image,
-- starts Ollama and the backend API,
-- waits for `http://localhost:8000/api/health`,
-- installs frontend dependencies when needed,
+- cleans generated demo data unless told otherwise;
+- builds the custom SIFT worker image;
+- starts Ollama and the backend API;
+- waits for `http://localhost:8000/api/health`;
+- installs frontend dependencies when needed;
 - starts Vite at `http://localhost:5174`.
 
 Open:
@@ -314,35 +246,21 @@ Open:
 http://localhost:5174
 ```
 
-In the UI:
+Dashboard flow:
 
 1. Click `LOAD DEMOS`.
 2. Open a demo case.
 3. Click `RUN CASE`.
 4. Review findings, evidence links, trace links, report output, and LLM commentary.
-5. Click on any finding to see its evidence record and trace record.
-
----
+5. Click a finding to inspect the evidence record and trace record behind it.
 
 ## Manual Docker Compose Start
 
-Use this path if you want to see each layer start separately.
-
-Build the SIFT worker image:
+From `SiftClone/dfir-triage`:
 
 ```bash
 docker compose build sift-worker-image
-```
-
-Start Ollama and the backend/API service:
-
-```bash
 docker compose up -d --build ollama mcp
-```
-
-Check backend health:
-
-```bash
 curl http://localhost:8000/api/health
 ```
 
@@ -360,17 +278,23 @@ Open:
 http://localhost:5174
 ```
 
----
-
 ## MCP Server Usage
 
 The MCP server is implemented in:
 
 ```text
-dfir_backend/server.py
+SiftClone/dfir-triage/dfir_backend/server.py
 ```
 
-It runs over stdio:
+From `SiftClone/dfir-triage`, install dependencies:
+
+```bash
+cd dfir_backend
+python -m pip install -r requirements.txt
+cd ..
+```
+
+Run over stdio:
 
 ```bash
 python dfir_backend/server.py
@@ -382,9 +306,7 @@ For interactive inspection:
 npx @modelcontextprotocol/inspector python dfir_backend/server.py
 ```
 
-### Example MCP Client Configuration
-
-For Claude Code or another MCP client:
+Example MCP client configuration:
 
 ```toml
 [mcp_servers.dfir]
@@ -395,185 +317,82 @@ startup_timeout_sec = 20
 tool_timeout_sec = 180
 ```
 
-On Windows, use the same config shape with a Windows absolute path:
+On Windows:
 
 ```toml
 cwd = "C:\\path\\to\\SiftClone\\dfir-triage"
 ```
 
-Install the MCP server dependencies before launching the stdio server directly:
-
-```bash
-cd dfir_backend
-python -m pip install -r requirements.txt
-cd ..
-```
-
-For full SIFT-backed tool execution through MCP, Docker must be available to the Python process, and the worker image should be built:
+For full SIFT-backed execution through MCP, Docker must be available to the Python process and the worker image should be built:
 
 ```bash
 docker compose build sift-worker-image
 ```
 
-### Core MCP Tools
-
-- `create_case` — Create or return a reproducible DFIR case with an assigned SIFT worker
-- `create_suspicious_demo_bundle` — Create demo cases with built-in findings
-- `start_worker` — Start or verify the dedicated SIFT worker container for a case
-- `case_status` — Return worker, mount, evidence, trace, and finding counts for a case
-- `check_sift_tools` — Check which expected SIFT tools are available in the case worker
-- `agent_run_case` — **Primary execution engine.** Runs full analysis pipeline with self-validation
-- `mount_e01` — Mount E01/EX01 evidence in the case worker
-- `list_directory` — List directory contents in the mounted evidence
-- `extract_file` — Extract a file from the mounted evidence
-- `inventory_artifacts` — Scan mounted evidence for notable artifacts (registry, logs, etc.)
-- `scan_filesystem` — Scan filesystem for suspicious patterns
-- `investigate_case` — Run the investigation pipeline
-- `generate_investigation_report` — Compile findings into validated report
-- `get_llm_case_brief` — Get compact case brief for LLM explanation
-- `answer_case_question` — Answer a follow-up question about the case
-- `list_case_evidence` — List all evidence records for a case
-- `list_case_traces` — List all trace records for a case
-- `list_case_findings` — List all findings for a case
-- `get_evidence` — Get a specific evidence record
-- `get_trace` — Get a specific trace record
-- `get_finding_trace` — Get the trace record that supports a finding
-
-**SIFT-oriented wrapper tools:**
-
-- `list_processes` — List processes from memory artifacts
-- `scan_yara` — Run YARA rules
-- `scan_hayabusa` — Run Hayabusa timeline analysis
-- `build_timeline` — Build event timeline from disk/memory artifacts
-- `query_timeline` — Query the built timeline
-- `scan_timeline` — Scan timeline for suspicious patterns
-
 ### MCP Smoke Test
 
-After installing Python dependencies, inspect the MCP server:
-
-```bash
-npx @modelcontextprotocol/inspector python dfir_backend/server.py
-```
-
-In the inspector, call:
+Use the MCP inspector and call:
 
 1. `create_suspicious_demo_bundle` with `reset=true`
 2. `agent_run_case` with `case_id="CASE-DEMO-PERSISTENCE-001"`
 3. `list_case_findings` with the same case ID
 4. `get_finding_trace` for one returned finding ID
 
-This demonstrates that the MCP server is not just a wrapper around a chat prompt. It calls deterministic backend functions, starts or checks the case worker, records evidence/traces/findings, and returns auditable IDs.
+This demonstrates that the MCP server is not a chat wrapper. It calls deterministic backend functions, starts or checks the case worker, records evidence/traces/findings, validates traceability, and returns auditable IDs.
 
----
+### Core MCP Tools
 
-## Example Output
+- `create_case`: create or return a reproducible DFIR case.
+- `create_suspicious_demo_bundle`: create built-in demo cases.
+- `start_worker`: start or verify the dedicated SIFT worker container.
+- `case_status`: return worker, mount, evidence, trace, and finding counts.
+- `check_sift_tools`: check expected SIFT tools inside the worker.
+- `agent_run_case`: primary deterministic controller with validation.
+- `mount_e01`: mount E01/EX01 evidence in the case worker.
+- `list_directory`: list directory contents in mounted evidence.
+- `list_temp_files`: list temporary files from mounted evidence.
+- `extract_file`: extract a file from mounted evidence.
+- `inventory_artifacts`: inventory notable artifacts.
+- `extract_priority_artifacts`: extract prioritized artifacts.
+- `scan_filesystem`: scan filesystem artifacts for suspicious patterns.
+- `investigate_case`: run deterministic investigation steps.
+- `generate_investigation_report`: compile a validated report from stores.
+- `get_llm_case_brief`: return the compact LLM explanation brief.
+- `answer_case_question`: answer from the compact validated case brief.
+- `list_case_evidence`: list evidence records.
+- `list_case_traces`: list trace records.
+- `list_case_findings`: list findings.
+- `get_evidence`: retrieve one evidence record.
+- `get_trace`: retrieve one trace record.
+- `get_finding_trace`: retrieve the trace supporting a finding.
 
-When you run `agent_run_case("CASE-DEMO-PERSISTENCE-001")`:
+SIFT-oriented wrappers:
 
-```json
-{
-  "case_id": "CASE-DEMO-PERSISTENCE-001",
-  "status": "completed",
-  "findings": [
-    {
-      "finding_id": "FND-001",
-      "title": "Suspicious run key persistence",
-      "description": "Registry run key contains suspicious executable",
-      "severity": "high",
-      "evidence_id": "EVD-001",
-      "trace_id": "TRC-042",
-      "artifact_path": "HKLM\\Software\\Microsoft\\Windows\\Run",
-      "tool_name": "registry_parser",
-      "confidence": "high"
-    }
-  ],
-  "evidence_records": [
-    {
-      "evidence_id": "EVD-001",
-      "path": "/cases/uploads/case.e01",
-      "hash": "sha256:a1b2c3...",
-      "mounted_in_container": "sift-worker-CASE-DEMO-PERSISTENCE-001",
-      "mount_point": "/cases/uploads"
-    }
-  ],
-  "trace_records": [
-    {
-      "trace_id": "TRC-042",
-      "tool_name": "registry_parser",
-      "command": "registry_parser /cases/case.e01 'HKLM\\Software\\Microsoft\\Windows\\Run'",
-      "output": "shell.exe [REG_SZ] ...",
-      "container": "sift-worker-CASE-DEMO-PERSISTENCE-001",
-      "timestamp": "2026-06-16T03:17:41Z"
-    }
-  ],
-  "report": {
-    "summary": "Case analysis complete. 1 high-severity finding.",
-    "findings_count": 1,
-    "validated": true
-  }
-}
-```
+- `list_processes`
+- `scan_yara`
+- `scan_hayabusa`
+- `build_timeline`
+- `query_timeline`
+- `scan_timeline`
 
-**Every finding → evidence record → trace record → tool output.**
-
-Any claim back to the specific tool execution that produced it, the container where it ran, and the evidence file analyzed.
-
----
-
-## Deterministic Outputs and Traceability
-
-Each case is represented as durable structured records:
+## Example Trace Chain
 
 ```text
-case
-  -> evidence records
-  -> trace records
-  -> findings
-  -> investigation report
-  -> compact LLM brief
+Finding: Suspicious run key persistence
+  evidence_id: EVD-001
+  trace_id: TRC-042
+  tool_name: registry_parser
+  artifact_path: HKLM\Software\Microsoft\Windows\Run
+  tool_output: shell.exe [REG_SZ] ...
 ```
 
-Traceability target:
+Every evidence-backed claim should be able to move backward through that chain:
 
 ```text
-finding
-  -> evidence_id
-  -> trace_id
-  -> tool name
-  -> artifact path / inode / output / hash where available
+claim -> finding -> evidence record -> trace record -> tool output
 ```
 
-`agent_run_case(case_id)` validates the generated report before returning it. Findings must include linked evidence and trace records so it can move from a narrative statement back to the deterministic tool output that supports it.
-
-The agent/controller also writes a trace record for its own orchestration, making the run itself auditable.
-
----
-
-## SIFT Workstation / Docker Integration
-
-The project uses Docker to reproduce a SIFT-like execution boundary without requiring manual configuration of a workstation.
-
-**Important containers and images:**
-
-- `dfir-mcp`: backend API container. It includes the Docker CLI and mounts the host Docker socket.
-- `ollama`: local Llama/Ollama service.
-- `dfir-sift-worker:latest`: custom worker image built from `sift_worker/Dockerfile`.
-- `sift-worker-<case-id>`: per-case worker container created on demand.
-
-The backend uses the Docker socket to create one worker container per case. Evidence from `./evidence` is mounted into the worker under `/cases`, so deterministic tools operate against case-specific evidence paths.
-
-**Why this approach:**
-
-- ✅ Original evidence on host is never modified (read-only mount)
-- ✅ Tools execute only inside isolated container
-- ✅ Each case gets a fresh, reproducible SIFT environment
-- ✅ Full auditability: which tool ran in which container for which case
-- ✅ No manual SIFT VM setup required for judges
-
-This is why a normal hosted container platform may not reproduce the full workflow unless it supports Docker socket access or sibling container creation.
-
----
+If the chain is missing, the claim is not accepted as a validated finding.
 
 ## Built-In Demo Cases
 
@@ -596,26 +415,24 @@ Run a demo case through the API:
 curl -X POST http://localhost:8000/api/cases/CASE-DEMO-PERSISTENCE-001/agent-run
 ```
 
-Show the per-case worker containers:
+Show per-case worker containers:
 
 ```bash
 docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
 ```
-
----
 
 ## Real Evidence Flow
 
 Place E01 or EX01 evidence under:
 
 ```text
-evidence/
+SiftClone/dfir-triage/evidence/
 ```
 
 For example:
 
 ```text
-evidence/uploads/example.e01
+SiftClone/dfir-triage/evidence/uploads/example.e01
 ```
 
 Then use the UI:
@@ -646,8 +463,6 @@ Accepted upload/list extensions:
 - `.e01`
 - `.ex01`
 
----
-
 ## Backend API
 
 The backend container runs:
@@ -656,7 +471,7 @@ The backend container runs:
 uvicorn dfir_backend.api:app --host 0.0.0.0 --port 8000
 ```
 
-### Key Endpoints
+Key endpoints:
 
 ```text
 GET  /api/health
@@ -681,17 +496,15 @@ GET  /api/cases/{case_id}/traces/{trace_id}
 GET  /api/cases/{case_id}/findings/{finding_id}/trace
 ```
 
----
+## LLM Boundary
 
-## LLM / Ollama Boundary
-
-The default model is:
+Default local model:
 
 ```text
 llama3.2:latest
 ```
 
-### Configured Environment Variables
+Relevant environment variables:
 
 ```text
 OLLAMA_HOST=http://ollama:11434
@@ -701,18 +514,9 @@ OLLAMA_NUM_PREDICT=260
 OLLAMA_CHAT_NUM_PREDICT=220
 ```
 
-The LLM receives a compact case brief, not raw artifacts or full evidence files by default. The brief includes:
-- case ID
-- counts (findings, evidence, traces)
-- finding IDs
-- evidence IDs
-- trace IDs
-- artifact locations
-- UI links for deep inspection
+The LLM receives a compact case brief, not raw evidence files by default. The brief includes case ID, finding/evidence/trace counts, linked IDs, artifact locations, and UI links for inspection.
 
-**LLM-generated text is marked as non-evidence commentary.** Evidence-backed claims should cite finding, evidence, and trace IDs.
-
----
+LLM-generated text is commentary. Evidence-backed claims must cite finding, evidence, and trace IDs.
 
 ## Hackathon Requirement Mapping
 
@@ -722,27 +526,26 @@ The LLM receives a compact case brief, not raw artifacts or full evidence files 
 
 It performs:
 
-- case loading
-- worker startup
-- SIFT tool checks
-- evidence mount when applicable
-- deterministic investigation
-- traceability validation
-- report generation
-- compact LLM brief preparation
+- case loading;
+- worker startup;
+- SIFT tool checks;
+- evidence mount when applicable;
+- deterministic investigation;
+- traceability validation;
+- report generation;
+- compact LLM brief preparation.
 
 ### Self-Correction
 
 The controller records correction attempts in `self_corrections`.
 
-Current self-correction behavior:
+Current behavior:
 
-- retries worker startup if the first start does not report `running`
-- restarts/rechecks if required tools are missing
-- inspects case status after mount errors before failing
-- regenerates the report from stored evidence/traces if traceability validation fails
-
-Built-in demos intentionally include a harmless draft-report self-check. The controller detects a draft missing a trace link, discards it, rebuilds the report from durable stores, and validates the final report.
+- retries worker startup if the first start does not report `running`;
+- restarts/rechecks if required tools are missing;
+- inspects case status after mount errors before failing;
+- rejects invalid draft reports in the demo;
+- regenerates reports from stored evidence/traces if traceability validation fails.
 
 ### Accuracy Validation
 
@@ -760,21 +563,17 @@ Every final finding must have:
 
 The returned report is structured narrative over deterministic records:
 
-- case summary
-- findings
-- evidence records
-- trace records
-- UI links
-- compact LLM grounding brief
-- optional Llama/Claude narrative
+- case summary;
+- findings;
+- evidence records;
+- trace records;
+- UI links;
+- compact LLM grounding brief;
+- optional Llama/Claude narrative.
 
----
+## Hosted Preview Note
 
-## Railway / Hosted Preview Note
-
-Railway or similar platforms can host a lightweight preview of the API/frontend and deterministic demo fixture viewing. They should not be treated as the authoritative full forensic runtime unless they support the Docker requirements above.
-
-The full local workflow starts sibling worker containers:
+Hosted platforms can preview the API/frontend and deterministic demo fixture viewing. The full forensic workflow should be judged with Docker Compose locally or on a Linux/SIFT-compatible host because it starts sibling worker containers:
 
 ```text
 dfir-mcp -> Docker socket -> sift-worker-<case-id>
@@ -782,18 +581,14 @@ dfir-mcp -> Docker socket -> sift-worker-<case-id>
 
 That requires:
 
-- Docker CLI in the backend container
-- access to a Docker daemon
-- `/var/run/docker.sock` mounted into the backend
-- permission to create additional containers
-
-For judging the complete SIFT-backed workflow, use Docker Compose locally or on a Linux/SIFT-compatible host.
-
----
+- Docker CLI in the backend container;
+- access to a Docker daemon;
+- `/var/run/docker.sock` mounted into the backend;
+- permission to create additional containers.
 
 ## Environment Variables
 
-### Backend
+Backend:
 
 ```text
 OLLAMA_HOST
@@ -807,7 +602,7 @@ CASES_CONTAINER_PATH
 DFIR_DATA_ROOT
 ```
 
-### Frontend
+Frontend:
 
 ```text
 VITE_API_BASE
@@ -815,9 +610,9 @@ VITE_API_BASE
 
 For local Vite development, `VITE_API_BASE` can be empty because `vite.config.ts` proxies `/api` to `http://localhost:8000`.
 
----
-
 ## Cleaning Generated Data
+
+From `SiftClone/dfir-triage`:
 
 PowerShell:
 
@@ -830,12 +625,12 @@ Bash:
 ```bash
 ./scripts/clean-generated.sh
 ```
- 
- Keep large forensic files under `evidence/` or upload them through the UI.
 
----
+Keep large forensic files under `SiftClone/dfir-triage/evidence/` or upload them through the UI.
 
 ## Verification Commands
+
+From `SiftClone/dfir-triage`:
 
 Backend syntax check:
 
@@ -868,22 +663,13 @@ Agent run:
 curl -X POST http://localhost:8000/api/cases/CASE-DEMO-PERSISTENCE-001/agent-run
 ```
 
----
-
 ## Troubleshooting
 
 ### Backend Health Fails
 
-Check containers:
-
 ```bash
 docker compose ps
 docker compose logs mcp
-```
-
-Check the health endpoint:
-
-```bash
 curl http://localhost:8000/api/health
 ```
 
@@ -905,32 +691,18 @@ docker compose up -d mcp
 
 ### Worker Does Not Start
 
-Build the worker image:
-
 ```bash
 docker compose build sift-worker-image
-```
-
-Check Docker state:
-
-```bash
 docker images
 docker ps
 ```
 
 ### MCP Server Will Not Start
 
-Install Python dependencies:
-
 ```bash
 cd dfir_backend
 python -m pip install -r requirements.txt
 cd ..
-```
-
-Then verify the server starts:
-
-```bash
 python dfir_backend/server.py
 ```
 
@@ -938,7 +710,7 @@ The process waits on stdio for an MCP client. For manual interaction, use the MC
 
 ### Frontend Rollup Optional Dependency Error
 
-On Bash:
+Bash:
 
 ```bash
 cd frontend
@@ -946,7 +718,7 @@ rm -rf node_modules package-lock.json
 npm install
 ```
 
-On PowerShell:
+PowerShell:
 
 ```powershell
 cd frontend
@@ -957,12 +729,10 @@ npm install
 
 ### Llama Is Slow or Times Out
 
-Options:
-
-- keep reports short with `OLLAMA_NUM_PREDICT`
-- keep chat answers short with `OLLAMA_CHAT_NUM_PREDICT`
-- use a smaller or faster Ollama model
-- warm up Ollama before a live demo
+- keep reports short with `OLLAMA_NUM_PREDICT`;
+- keep chat answers short with `OLLAMA_CHAT_NUM_PREDICT`;
+- use a smaller or faster Ollama model;
+- warm up Ollama before a live demo.
 
 ### Plaso / log2timeline E01 Errors
 
@@ -974,7 +744,14 @@ agent_run_case -> direct filesystem/artifact inventory -> traceable findings -> 
 
 Timeline tooling remains available, but the built-in demo does not depend on damaged image timeline generation.
 
----
+## Novel Contribution
+
+- Deterministic MCP tool wrappers over SIFT-style forensic workflows.
+- Reproducible per-case Docker worker platform.
+- Evidence, trace, and finding model with auditable IDs.
+- Self-validating controller that rejects or rebuilds unsupported reports.
+- Hallucination detection boundary: claims must trace to tool output.
+- Compact LLM reporting layer where the LLM explains validated records instead of creating findings.
 
 ## License and Third-Party Tools
 
@@ -987,11 +764,3 @@ Review each dependency before public distribution or competition submission:
 - Hayabusa
 - Plaso/log2timeline
 - React/Vite/npm dependencies
-
-**The novel contribution is:**
-- Reproducible case-worker platform with Docker isolation
-- Deterministic MCP tool wrappers (type-safe, non-destructive)
-- Traceable evidence/finding/trace model
-- Self-validating agent controller
-- Architectural guardrails (not prompt-based) for evidence integrity
-- Compact LLM reporting boundary (LLM as explanation layer, not source of truth)
