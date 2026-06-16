@@ -187,7 +187,7 @@ The goal is that any connected tool or agent can be challenged with: "show me th
 
 ## Recommended Recreation
 
-The primary judge recreation path is local Docker Compose.
+The primary recreation path is local Docker Compose.
 
 Runtime services:
 
