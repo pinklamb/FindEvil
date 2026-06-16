@@ -1,8 +1,12 @@
 import json
+import os
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 try:
@@ -259,3 +263,38 @@ def trace(case_id: str, trace_id: str) -> dict:
 @app.get("/api/cases/{case_id}/findings/{finding_id}/trace")
 def finding_trace(case_id: str, finding_id: str) -> dict:
     return _call_backend(get_finding_trace, case_id, finding_id)
+
+
+def _frontend_dist() -> Path | None:
+    candidates = [
+        Path(os.environ.get("FRONTEND_DIST_PATH", "")),
+        Path("/app/frontend_dist"),
+        Path(__file__).resolve().parents[1] / "frontend" / "dist",
+    ]
+    for candidate in candidates:
+        if candidate and (candidate / "index.html").is_file():
+            return candidate
+    return None
+
+
+FRONTEND_DIST = _frontend_dist()
+
+if FRONTEND_DIST is not None:
+    assets_dir = FRONTEND_DIST / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+    @app.get("/", response_class=HTMLResponse)
+    def frontend_index() -> str:
+        return (FRONTEND_DIST / "index.html").read_text(encoding="utf-8")
+
+    @app.get("/{full_path:path}", response_class=HTMLResponse)
+    def frontend_spa(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API route not found")
+
+        static_file = FRONTEND_DIST / full_path
+        if static_file.is_file():
+            return FileResponse(static_file)
+
+        return (FRONTEND_DIST / "index.html").read_text(encoding="utf-8")
