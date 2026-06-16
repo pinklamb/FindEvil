@@ -221,7 +221,22 @@ The deterministic controller is the source of truth. The LLM (Llama/Claude) is a
 
 ---
 
-## What Judges Should Recreate
+
+## Forensic Path Extraction and Docker
+
+Suspicious file paths come from *analyzed artifact data*, not filesystem traversal.
+
+When a SIFT tool parses a Windows registry hive from a disk image:
+- Tool reads: /cases/uploads/case.e01 (container path)
+- Extracts: C:\Windows\System32\shell.exe (from image data)
+- Records: Both the container mount and the extracted path
+
+Docker doesn't "interfere" with path discovery. It isolates it and makes 
+it auditable. Same image + same mount = same extracted paths. 
+This reproducibility is a feature, not a limitation.
+
+
+## Reccomended Recreation
 
 The primary reproducible demo is local Docker Compose:
 
