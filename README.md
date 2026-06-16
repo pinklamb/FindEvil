@@ -23,6 +23,22 @@ In forensics, that is a serious failure mode:
 - judges and analysts need to know which exact tool output supports each finding;
 - evidence integrity should not depend on model behavior.
 
+
+## Why This Matters in Forensics
+
+Incident responders stake their reputation on findings. A claim that doesn't 
+check out can:
+- Torpedo a prosecution
+- Waste days of investigation time
+- Create liability for the organization
+
+In automated systems, hallucinations are especially dangerous because they're 
+confident and plausible. An LLM can confidently invent a finding that sounds 
+forensically sound but has no evidence.
+
+This project makes hallucinations detectable: if a claim doesn't trace to 
+tool output, it's commentary, not evidence.
+
 ## The Solution
 
 This project makes deterministic SIFT tool execution the source of truth.
