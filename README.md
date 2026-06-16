@@ -2,7 +2,7 @@
 
 **Detectable hallucinations for agentic forensic analysis.**
 
-Traceable DFIR Investigator is a reproducible, Docker-first forensic investigation platform built for the SANS FindEvil / Protocol SIFT hackathon. It exposes SIFT-backed forensic workflows through a real Model Context Protocol (MCP) server, while also providing a FastAPI backend and React dashboard for judge-friendly review.
+Traceable DFIR Investigator is a reproducible, Docker-first forensic investigation platform built for the SANS FindEvil / Protocol SIFT hackathon. It exposes SIFT-backed forensic workflows through a real Model Context Protocol (MCP) server, while also providing a FastAPI backend and React dashboard for review.
 
 The project changes the trust boundary:
 
